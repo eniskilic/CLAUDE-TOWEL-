@@ -56,10 +56,18 @@ class OrderParser:
         'White': 'Blanco',
         'Black': 'Negro',
         'Navy': 'Azul Marino',
+        'Navy Blue': 'Azul Marino',
         'Gray': 'Gris',
+        'Grey': 'Gris',
+        'Light Grey': 'Gris Claro',
+        'Light Gray': 'Gris Claro',
+        'Dark Gray': 'Gris Oscuro',
+        'Dark Grey': 'Gris Oscuro',
+        'Mid Blue': 'Azul Medio',
         'Brown': 'Marrón',
         'Red': 'Rojo',
         'Pink': 'Rosa',
+        'Hot Pink': 'Rosa Fuerte',
         'Blue': 'Azul',
         'Green': 'Verde',
         'Yellow': 'Amarillo',
@@ -67,7 +75,11 @@ class OrderParser:
         'Purple': 'Púrpura',
         'Beige': 'Beige',
         'Cream': 'Crema',
-        'Ivory': 'Marfil'
+        'Ivory': 'Marfil',
+        'Gold': 'Oro',
+        'Silver': 'Plata',
+        'Aqua': 'Aguamarina',
+        'Turquoise': 'Turquesa'
     }
     
     def __init__(self):
@@ -172,16 +184,19 @@ class OrderParser:
     
     def _extract_buyer_name(self, text):
         """Extract buyer name from order text"""
-        # Look for name pattern at start of text or after "Ship to:"
+        # Look for name pattern at start of text or after "Ship to:" / "Ship To:"
         patterns = [
-            r'Ship to:\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
-            r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+            r'(?i)Ship\s+[Tt]o:\s*\n\s*([^\n]+?)(?=\n)',  # Case insensitive, next line
+            r'(?i)Ship\s+[Tt]o:\s*([A-Z][^\n]+?)(?=\n)',  # Case insensitive, same line
         ]
         
         for pattern in patterns:
             match = re.search(pattern, text, re.MULTILINE)
             if match:
-                return match.group(1).strip()
+                name = match.group(1).strip()
+                # Clean up address components if captured
+                name = re.split(r'\d+\s', name)[0].strip()  # Remove if starts with number
+                return name
         
         return "Unknown Buyer"
     
@@ -207,17 +222,43 @@ class OrderParser:
     
     def _extract_color_from_sku(self, sku):
         """Extract towel color from SKU"""
-        color_match = re.search(r'-([A-Z][a-z]+)$', sku)
-        if color_match:
-            return color_match.group(1)
+        # Extract everything after the second hyphen (handles multi-word colors)
+        # Format: Type-Count-Color or Type-Count-Color1 Color2
+        parts = sku.split('-')
+        if len(parts) >= 3:
+            # Join all parts after the second hyphen
+            color = '-'.join(parts[2:])
+            # Replace any hyphens within color name with spaces (e.g., Mid-Blue -> Mid Blue)
+            # But keep if it's part of compound like Light-Grey
+            # Actually, check if there are no hyphens and it's all one word or camelCase
+            if 'Pcs' not in color:  # Make sure we didn't capture part of the type
+                # Handle camelCase like MidBlue -> Mid Blue
+                color = re.sub(r'([a-z])([A-Z])', r'\1 \2', color)
+                return color
+        
+        # Fallback: try to extract last part
+        match = re.search(r'-([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)$', sku)
+        if match:
+            return match.group(1)
+        
         return "Unknown"
     
     def _extract_thread_color(self, block):
-        """Extract thread color from customization block"""
+        """Extract thread color from customization block (Font Color field)"""
+        # Look for "Font Color: ColorName (#hexcode)"
+        pattern = r'Font Color:\s*([^(#\n]+)'
+        match = re.search(pattern, block)
+        
+        if match:
+            color = match.group(1).strip()
+            # Remove any trailing characters like parentheses
+            color = re.sub(r'\s*\([^)]*\).*$', '', color)
+            return color
+        
+        # Fallback patterns
         patterns = [
-            r'Thread Color:\s*([A-Za-z]+)',
-            r'Thread:\s*([A-Za-z]+)',
-            r'Color:\s*([A-Za-z]+)'
+            r'Thread Color:\s*([A-Za-z\s]+)',
+            r'Thread:\s*([A-Za-z\s]+)',
         ]
         
         for pattern in patterns:
@@ -229,16 +270,43 @@ class OrderParser:
     
     def _extract_customization_text(self, block):
         """Extract customization text (names/text to embroider)"""
+        customizations = []
+        
+        # Look for specific towel customization fields
         patterns = [
+            (r'Washcloth:\s*([^\n]+)', 'Washcloth'),
+            (r'Hand Towel:\s*([^\n]+)', 'Hand Towel'),
+            (r'Bath Towel:\s*([^\n]+)', 'Bath Towel'),
+            (r'First Washcloth:\s*([^\n]+)', 'Washcloth 1'),
+            (r'Second Washcloth:\s*([^\n]+)', 'Washcloth 2'),
+            (r'First Hand Towel:\s*([^\n]+)', 'Hand Towel 1'),
+            (r'Second Hand Towel:\s*([^\n]+)', 'Hand Towel 2'),
+            (r'First Bath Towel:\s*([^\n]+)', 'Bath Towel 1'),
+            (r'Second Bath Towel:\s*([^\n]+)', 'Bath Towel 2'),
+        ]
+        
+        for pattern, label in patterns:
+            match = re.search(pattern, block, re.IGNORECASE)
+            if match:
+                text = match.group(1).strip()
+                # Remove any trailing content after certain keywords
+                text = re.split(r'\s*(?:Font|Choose|Gift|Price|\$)', text)[0].strip()
+                if text:
+                    customizations.append(f"{label}: {text}")
+        
+        if customizations:
+            return ' | '.join(customizations)
+        
+        # Fallback to old patterns if none found
+        fallback_patterns = [
             r'(?:Customization|Text|Name):\s*(.+?)(?=\n|Thread|Font|$)',
             r'Embroider:\s*(.+?)(?=\n|Thread|Font|$)',
         ]
         
-        for pattern in patterns:
+        for pattern in fallback_patterns:
             match = re.search(pattern, block, re.IGNORECASE)
             if match:
                 text = match.group(1).strip()
-                # Clean up
                 text = re.sub(r'\s+', ' ', text)
                 return text[:100]
         
@@ -246,11 +314,25 @@ class OrderParser:
     
     def _extract_font(self, block):
         """Extract font choice from customization block"""
-        pattern = r'(?:Choose Your Font|Font):\s*([A-Za-z\s]+?)(?=\n|Thread|$)'
-        match = re.search(pattern, block, re.IGNORECASE)
+        # Pattern 1: Standard "Choose Your Font:"
+        pattern1 = r'(?:Choose Your Font|Font):\s*([A-Za-z\s]+?)(?=\n|Font Color|$)'
+        match = re.search(pattern1, block, re.IGNORECASE)
         
         if match:
-            return match.group(1).strip()
+            font = match.group(1).strip()
+            # Remove any trailing content
+            font = re.split(r'\s*(?:Font Color|Color)', font)[0].strip()
+            return font
+        
+        # Pattern 2: "Set Description: FontName" format (e.g., "6Pcs Towel Set - Green: Georgia")
+        pattern2 = r'(?:Pcs Towel Set[^:]*|Bath Towel[^:]*|Hand Towel[^:]*):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*(?=\n|Font Color)'
+        match = re.search(pattern2, block)
+        
+        if match:
+            potential_font = match.group(1).strip()
+            # Verify it's not a color name by checking if Font Color follows
+            if not re.search(r'Font Color:', block[match.end():match.end()+50]):
+                return potential_font
         
         return "Default"
     
@@ -332,15 +414,23 @@ class LabelGenerator:
         c.setFont("Helvetica-Bold", 11)
         c.drawString(x_margin, y, f"Customization:")
         y -= line_height * 0.8
-        c.setFont("Helvetica", 10)
+        c.setFont("Helvetica", 9)
         # Wrap text if needed
-        custom_lines = simpleSplit(item['customization_text'], "Helvetica", 10, 
-                                   self.label_width - 2*x_margin)
-        for line in custom_lines[:3]:  # Max 3 lines
-            c.drawString(x_margin + 0.2*inch, y, line)
-            y -= line_height * 0.7
+        custom_text = item['customization_text']
+        # Split by pipe separator if present for better formatting
+        if ' | ' in custom_text:
+            custom_lines = custom_text.split(' | ')
+            for line in custom_lines[:5]:  # Max 5 lines
+                c.drawString(x_margin + 0.2*inch, y, line)
+                y -= line_height * 0.6
+        else:
+            custom_lines = simpleSplit(custom_text, "Helvetica", 9, 
+                                       self.label_width - 2*x_margin)
+            for line in custom_lines[:4]:  # Max 4 lines
+                c.drawString(x_margin + 0.2*inch, y, line)
+                y -= line_height * 0.6
         
-        y -= line_height * 0.3
+        y -= line_height * 0.2
         
         # Font
         c.setFont("Helvetica-Bold", 10)
@@ -368,8 +458,8 @@ class LabelGenerator:
             return None
         
         buffer = BytesIO()
-        # Portrait orientation for gift labels
-        c = canvas.Canvas(buffer, pagesize=(self.label_height, self.label_width))
+        # Landscape orientation for gift labels (6" x 4")
+        c = canvas.Canvas(buffer, pagesize=(self.label_width, self.label_height))
         
         for item in gift_items:
             self._draw_gift_label(c, item)
@@ -380,32 +470,33 @@ class LabelGenerator:
         return buffer
     
     def _draw_gift_label(self, c, item):
-        """Draw a single gift message label (portrait, centered, italic)"""
-        width = self.label_height
-        height = self.label_width
+        """Draw a single gift message label (landscape, centered, Times New Roman italic bold)"""
+        width = self.label_width   # 6 inches
+        height = self.label_height  # 4 inches
         
         margin = 0.5 * inch
         max_width = width - 2 * margin
         
-        # Center the gift message
-        c.setFont("Helvetica-Oblique", 12)
+        # Center the gift message using Times New Roman Bold Italic
+        c.setFont("Times-BoldItalic", 14)
         
         # Split message into lines
         message = item['gift_message']
-        lines = simpleSplit(message, "Helvetica-Oblique", 12, max_width)
+        lines = simpleSplit(message, "Times-BoldItalic", 14, max_width)
         
         # Calculate starting Y position to center text vertically
-        total_height = len(lines) * 0.25 * inch
+        line_spacing = 0.3 * inch
+        total_height = len(lines) * line_spacing
         y_start = (height + total_height) / 2
         
         # Draw each line centered
         for line in lines:
-            text_width = c.stringWidth(line, "Helvetica-Oblique", 12)
+            text_width = c.stringWidth(line, "Times-BoldItalic", 14)
             x = (width - text_width) / 2
             c.drawString(x, y_start, line)
-            y_start -= 0.25 * inch
+            y_start -= line_spacing
         
-        # Add small footer
+        # Add small footer with order info
         c.setFont("Helvetica", 8)
         footer = f"Order: {item['order_id']}"
         footer_width = c.stringWidth(footer, "Helvetica", 8)
